@@ -7,17 +7,20 @@ use bevy::render::camera;
 use bevy::render::view::window;
 use bevy::state::commands;
 use bevy::ui::update;
-use bevy::window::{CompositeAlphaMode, CursorOptions, PrimaryWindow, WindowLevel, WindowMode};
+#[cfg(target_os = "macos")]
+use bevy::window::CompositeAlphaMode;
+use bevy::window::{CursorOptions, PrimaryWindow, WindowLevel, WindowMode};
 use ops::cos;
 
 fn main() {
     let window = Window {
         // Enable transparent support for the window
         transparent: true,
-        composite_alpha_mode: CompositeAlphaMode::PostMultiplied,
+        // composite_alpha_mode: CompositeAlphaMode::PostMultiplied,
         decorations: false,
         window_level: WindowLevel::AlwaysOnTop,
-        // mode: WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+        #[cfg(target_os = "macos")]
+        mode: WindowMode::BorderlessFullscreen(MonitorSelection::Current),
         // cursor_options: CursorOptions {
         // hit_test: false,
         // ..Default::default()
@@ -32,8 +35,10 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::NONE))
         .add_plugins(HelloPlugin)
+        .add_event::<BulletEvent>()
         .insert_resource(MyTimer(Timer::from_seconds(1.0, TimerMode::Repeating)))
         .insert_resource(UpdateTimer(Timer::from_seconds(0.1, TimerMode::Repeating)))
+        .add_systems(Startup, setup_gif)
         .add_systems(Startup, setup_cam)
         .add_systems(
             Update,
@@ -42,12 +47,61 @@ fn main() {
                 pos_bullet.run_if(input_just_released(MouseButton::Left)),
                 pre_bullet.run_if(input_pressed(MouseButton::Left)),
                 move_bullet,
-                // remove_bullet,
+                remove_bullet,
+                play_sp,
             ),
         )
         .add_systems(PostUpdate, update_bullet_count)
         .add_systems(PreUpdate, show_bullet_count)
         .run();
+}
+
+#[derive(Component)]
+struct AmIdx {
+    first: usize,
+    last: usize,
+}
+
+#[derive(Component)]
+struct AnTm(Timer);
+
+fn setup_gif(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut tal: ResMut<Assets<TextureAtlasLayout>>,
+) {
+    let tx = asset_server.load("s1.png");
+    let layout = TextureAtlasLayout::from_grid(UVec2::splat(32), 6, 1, None, None);
+    let tall = tal.add(layout);
+    let idx = AmIdx { first: 1, last: 5 };
+
+    commands.spawn((
+        Sprite::from_atlas_image(
+            tx,
+            TextureAtlas {
+                layout: tall,
+                index: idx.first,
+            },
+        ),
+        Transform::from_scale(Vec3::splat(6.0)),
+        idx,
+        AnTm(Timer::from_seconds(0.5, TimerMode::Repeating)),
+    ));
+}
+
+fn play_sp(time: Res<Time>, mut query: Query<(&mut AnTm, &mut AmIdx, &mut Sprite)>) {
+    for (mut tm, idx, mut sp) in &mut query {
+        tm.0.tick(time.delta());
+        if tm.0.just_finished() {
+            if let Some(ats) = &mut sp.texture_atlas {
+                ats.index = if ats.index == idx.last {
+                    idx.first
+                } else {
+                    ats.index + 1
+                };
+            }
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -219,18 +273,10 @@ fn pos_bullet(
     }
 }
 
-fn move_bullet(
-    camera_query: Single<(&Camera, &GlobalTransform)>,
-    window_query: Single<&Window, With<PrimaryWindow>>,
-    mut shapes: Query<(&mut Transform, &Bullet), With<Bullet>>,
-) {
+fn move_bullet(mut shapes: Query<(&mut Transform, &Bullet), With<Bullet>>) {
     for mut shape in shapes.iter_mut() {
         shape.0.translation.x += shape.1.speed * shape.1.x_scale;
         shape.0.translation.y += shape.1.speed * shape.1.y_scale;
-        let (x, y) = (shape.0.translation.x, shape.0.translation.y);
-        let pos = camera_query
-            .0
-            .world_to_viewport(camera_query.1, Vec3::new(x, y, 0.0));
     }
 }
 
@@ -239,15 +285,19 @@ fn remove_bullet(
     mut ev: EventWriter<BulletEvent>,
     camera_query: Single<(&Camera, &GlobalTransform)>,
     window_query: Single<&Window, With<PrimaryWindow>>,
-    shapes: Query<(Entity, &Transform, &Bullet), With<Target>>,
+    shapes: Query<(Entity, &Transform, &Bullet), With<Bullet>>,
 ) {
     let max_x = window_query.width();
     let max_y = window_query.height();
     for shape in shapes.iter() {
-        let (x, y) = (shape.1.translation.x, shape.1.translation.y);
+        let (x, y, z) = (
+            shape.1.translation.x,
+            shape.1.translation.y,
+            shape.1.translation.z,
+        );
         let pos = camera_query
             .0
-            .world_to_viewport(camera_query.1, Vec3::new(x, y, 0.0));
+            .world_to_viewport(camera_query.1, Vec3::new(x, y, z));
         if let Ok(post) = pos {
             if post.x >= 0.0 && post.y >= 0.0 && post.x <= max_x && post.y <= max_y {
                 continue;
@@ -304,10 +354,6 @@ fn do_chhh(
     //     shape.translation.y += y_move;
     // }
 
-    println!(
-        "old pos is: {}, new pos is: {}, dist: ({},{}), move:({},{})",
-        old_pos, shape.translation, x_dist, y_dist, x_move, y_move
-    );
     return;
     if shape.translation.x > pp.x {
         shape.translation.x -= step;
